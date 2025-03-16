@@ -15,6 +15,7 @@ pyautogui = "*"
 matplotlib = "*"
 isaac-ai = {editable = true, path = "."}
 opencv-stubs = "*"
+pywin32 = "*"
 
 [dev-packages]
 flake8 = "*"

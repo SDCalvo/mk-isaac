@@ -3,6 +3,8 @@ Capture the game window and detect game state.
 """
 import logging
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
+import json
+import os
 
 # Type information for cv2 methods is provided in cv2_stubs.py
 # pyright: reportMissingImports=false
@@ -17,6 +19,9 @@ import time
 import win32api
 from ctypes import Structure, c_long, c_ulong, sizeof, POINTER, pointer
 from ctypes import windll
+import win32ui
+import hashlib
+from collections import defaultdict
 
 
 # Define TypedDict for ROI dictionaries
@@ -111,526 +116,581 @@ def is_window_active(hwnd):
 
 class GameCapture:
     """
-    Capture the game window and detect game state.
+    A simplified class to capture game state from The Binding of Isaac.
+    Focused on essential elements for reinforcement learning:
+    - Health
+    - Floor number
+    - Room exploration tracking
+    - Game over detection
     """
+    
     def __init__(self):
-        """Initialize the game capture with MSS screen capture."""
-        self.sct = mss()
-        self.monitor = self.sct.monitors[1]  # Primary monitor
-
-        # Set up logging
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger("GameCapture")
-
-        # Define regions of interest (ROIs) for different game elements
-        # These will need to be calibrated based on your specific game window size
-        self.roi: Dict[str, Optional[RoiDict]] = {
-            "health_bar": None,  # Will be set during calibration
-            "minimap": None,  # Region for the minimap/floor layout
-            "item_display": None,  # Region for currently held items
-        }
-
-        # Reference images for template matching
-        self.templates = {
-            "health_full": None,
-            "health_half": None,
-            "health_empty": None,
-            "door_closed": None,
-            "door_open": None,
-        }
-
-        # Color ranges for object detection
-        self.color_ranges = {
-            "player": {
-                "lower": np.array([200, 0, 0], dtype=np.uint8),
-                "upper": np.array([255, 100, 100], dtype=np.uint8),
-            },  # Red for player
-            "enemy": {
-                "lower": np.array([0, 0, 100], dtype=np.uint8),
-                "upper": np.array([100, 100, 255], dtype=np.uint8),
-            },  # Blue for enemies
-            "pickup": {
-                "lower": np.array([200, 200, 0], dtype=np.uint8),
-                "upper": np.array([255, 255, 100], dtype=np.uint8),
-            },  # Yellow for pickups
-        }
-
-        # Flag to indicate if calibration has been performed
-        self.is_calibrated = False
-
-    def calibrate(self, __frame: np.ndarray) -> None:
-        """
-        Calibrate the detection regions based on a reference frame.
-        This needs to be called once at the start with a clear view of the game UI.
-
-        Args:
-            _frame (numpy.ndarray): A reference frame from the game
-        """
-        # Get frame dimensions
-        height, width = __frame.shape[:2]
-
-        # Set ROIs based on frame size
-        # Health bar is in the top-left corner (smaller than minimap)
-        self.roi["health_bar"] = {
-            "left": int(width * 0.05),  # Left side of screen
-            "top": int(height * 0.05),  # Near the top
-            "width": int(width * 0.15),  # Smaller width for health bar
-            "height": int(height * 0.1),  # Smaller height for health bar
-        }
-
-        # Minimap is in the top-right corner (larger than health bar)
-        self.roi["minimap"] = {
-            "left": int(width * 0.8),  # Right side of screen
-            "top": int(height * 0.05),  # Near the top
-            "width": int(width * 0.2),  # Larger width for minimap
-            "height": int(height * 0.2),  # Larger height for minimap
-        }
-
-        # Item display is often at the bottom-right
-        self.roi["item_display"] = {
-            "left": int(width * 0.8),
-            "top": int(height * 0.8),
-            "width": int(width * 0.15),
-            "height": int(height * 0.15),
-        }
-
-        self.logger.info("Calibration complete with frame size: %dx%d", width, height)
-        self.is_calibrated = True
-
-        # TODO: Load templates for health, doors, etc. if using template matching
-
-    def capture_game_window(self, region: Optional[Tuple[int, int, int, int]] = None, no_unpause: bool = False) -> np.ndarray:
-        """
-        Capture The Binding of Isaac game window.
-        Args:
-            region (tuple): (left, top, width, height) of capture region
-            no_unpause (bool): If True, don't try to focus or unpause the window
-        Returns:
-            numpy.ndarray: Captured frame in RGB format
-        """
+        """Initialize the GameCapture object."""
+        self.roi_data = self._load_roi_data()
+        self.game_window_handle = None
+        self.game_window_rect = None
+        self.explored_rooms = set()  # Store hashes of explored rooms
+        self.debug = True  # Enable debug image saving
+        
+        # Create debug folder if debug is enabled
+        if self.debug:
+            os.makedirs("debug_images", exist_ok=True)
+    
+    def _load_roi_data(self):
+        """Load ROI data from json file."""
         try:
-            # Try to find The Binding of Isaac window
-            def callback(hwnd, windows):
-                if win32gui.IsWindowVisible(hwnd):
-                    title = win32gui.GetWindowText(hwnd)
-                    if "isaac" in title.lower():  # Case insensitive search for "isaac" in window title
-                        windows.append(hwnd)
-                return True
-
-            windows = []
-            win32gui.EnumWindows(callback, windows)
-
-            self.logger.info("Before any window operations: " + log_focused_window())
-
-            if windows:
-                # Get the first Isaac window found
-                hwnd = windows[0]
-                title = win32gui.GetWindowText(hwnd)
-                self.logger.info(f"Found Isaac window: '{title}' (hwnd: {hwnd})")
-                
-                # Only focus and unpause if not explicitly disabled
-                if not no_unpause:
-                    # Make sure window is in normal state (not minimized)
-                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    time.sleep(0.1)
-                    
-                    # Get window rect
-                    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                    
-                    # Try to activate the window
-                    win32gui.BringWindowToTop(hwnd)
-                    win32gui.SetForegroundWindow(hwnd)
-                    time.sleep(0.2)  # Give it more time to activate
-                    
-                    # Check if we successfully got focus
-                    if is_window_active(hwnd):
-                        self.logger.info("Successfully activated Isaac window")
-                        # Send Escape key only if we have focus
-                        windll.user32.PostMessageW(hwnd, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 0)
-                        time.sleep(0.05)
-                        windll.user32.PostMessageW(hwnd, win32con.WM_KEYUP, win32con.VK_ESCAPE, 0)
-                        
-                        # Add a MUCH longer delay to allow the pause menu to fully transition out
-                        self.logger.info("Waiting for pause menu to fully transition out...")
-                        time.sleep(1.0)  # Wait long enough for transition animation to complete
-                    else:
-                        self.logger.warning("Failed to activate Isaac window!")
-                else:
-                    self.logger.info("Skipping window focus and unpause as requested")
-                
-                # Get window rect
-                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-                region_dict = {
-                    "left": left,
-                    "top": top,
-                    "width": right - left,
-                    "height": bottom - top,
-                }
-            else:
-                self.logger.warning("No Isaac window found!")
-                # If no Isaac window found, use provided region or default to monitor
-                if region is None:
-                    region_dict = {
-                        "left": self.monitor["left"],
-                        "top": self.monitor["top"],
-                        "width": self.monitor["width"],
-                        "height": self.monitor["height"],
-                    }
-                else:
-                    left, top, width, height = region
-                    region_dict = {"left": left, "top": top, "width": width, "height": height}
-
-            self.logger.info("Before taking screenshot: " + log_focused_window())
-            # Take screenshot
-            screenshot = self.sct.grab(region_dict)
-            self.logger.info("After taking screenshot: " + log_focused_window())
+            with open("roi_coordinates.json", "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Return default ROIs if file not found or invalid
+            print("ROI data file not found or invalid. Using default values.")
+            return {
+                "health": {"x": 0.05, "y": 0.05, "width": 0.15, "height": 0.05},
+                "minimap": {"x": 0.85, "y": 0.1, "width": 0.12, "height": 0.12},
+                "game_area": {"x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8},
+                "game_window": {"width": 1920, "height": 1080}
+            }
+    
+    def find_game_window(self):
+        """Find the Binding of Isaac game window."""
+        def callback(hwnd, windows):
+            if win32gui.IsWindowVisible(hwnd):
+                window_text = win32gui.GetWindowText(hwnd)
+                if "isaac" in window_text.lower():
+                    windows.append((hwnd, window_text))
+            return True
+        
+        windows = []
+        win32gui.EnumWindows(callback, windows)
+        
+        if not windows:
+            return None, None
+        
+        # Use the first Isaac window found
+        hwnd, window_name = windows[0]
+        try:
+            rect = win32gui.GetWindowRect(hwnd)
+            return hwnd, rect
+        except:
+            return None, None
+    
+    def capture_game_window(self):
+        """Capture a frame from the game window."""
+        # Find game window if not already found
+        if not self.game_window_handle:
+            self.game_window_handle, self.game_window_rect = self.find_game_window()
+            if not self.game_window_handle:
+                print("Game window not found")
+                return None
             
-            # Convert to PIL Image and then to RGB numpy array
-            frame = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-            return np.array(frame)
+            # Set focus to the game window
+            try:
+                # First focus the window
+                win32gui.ShowWindow(self.game_window_handle, win32con.SW_RESTORE)
+                time.sleep(0.1)
+                win32gui.SetForegroundWindow(self.game_window_handle)
+                time.sleep(0.2)
+                
+                # Unpause the game with Escape key
+                windll.user32.PostMessageW(self.game_window_handle, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 0)
+                time.sleep(0.05)
+                windll.user32.PostMessageW(self.game_window_handle, win32con.WM_KEYUP, win32con.VK_ESCAPE, 0)
+                time.sleep(0.5)  # Wait for pause menu to disappear
+                
+                # Update window rectangle after focusing
+                self.game_window_rect = win32gui.GetWindowRect(self.game_window_handle)
+            except Exception as e:
+                print(f"Could not set focus or unpause game window: {e}")
+                return None  # Return None if we can't focus or unpause
+        
+        # Check if we have a valid window rectangle
+        if not self.game_window_rect:
+            print("Invalid window rectangle")
+            self.game_window_handle = None  # Reset handle to force re-finding
+            return None
+        
+        try:
+            # Get window size
+            left, top, right, bottom = self.game_window_rect
+            width = right - left
+            height = bottom - top
+            
+            # Create device context
+            hwndDC = win32gui.GetWindowDC(self.game_window_handle)
+            mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+            saveDC = mfcDC.CreateCompatibleDC()
+            
+            # Create bitmap
+            saveBitmap = win32ui.CreateBitmap()
+            saveBitmap.CreateCompatibleBitmap(mfcDC, width, height)
+            saveDC.SelectObject(saveBitmap)
+            
+            # Copy window content to bitmap
+            saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
+            
+            # Convert bitmap to image
+            bmpinfo = saveBitmap.GetInfo()
+            bmpstr = saveBitmap.GetBitmapBits(True)
+            img = np.frombuffer(bmpstr, dtype='uint8')
+            img.shape = (bmpinfo['bmHeight'], bmpinfo['bmWidth'], 4)
+            
+            # Clean up
+            win32gui.DeleteObject(saveBitmap.GetHandle())
+            saveDC.DeleteDC()
+            mfcDC.DeleteDC()
+            win32gui.ReleaseDC(self.game_window_handle, hwndDC)
+            
+            # Convert to BGR format for OpenCV
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            
+            # Save debug capture if needed
+            if self.debug:
+                cv2.imwrite(f"debug_images/capture_{time.time()}.jpg", img)
+            
+            return img
+            
         except Exception as e:
-            self.logger.error(f"Error capturing game window: {e}")
-            # Return a black frame as fallback
-            return np.zeros((self.monitor["height"], self.monitor["width"], 3), dtype=np.uint8)
-
-    def process__frame(self, __frame: np.ndarray) -> np.ndarray:
+            print(f"Error capturing game window: {e}")
+            # Reset window handle to force re-finding it next time
+            self.game_window_handle = None
+            self.game_window_rect = None
+            return None
+    
+    def get_game_state(self, frame):
         """
-        Process the captured _frame for AI input.
-        Args:
-            _frame (numpy.ndarray): Raw captured _frame
+        Extract the current game state from a frame.
+        
         Returns:
-            numpy.ndarray: Processed _frame ready for the AI model
+            dict: A dictionary with game state information:
+                - health (float): Current health value
+                - current_floor (int): Current floor number
+                - is_game_over (bool): Whether the game is over
+                - is_new_room (bool): Whether player has entered a new room
+                - is_unexplored_room (bool): Whether this room is unexplored
         """
-        # Resize to a standard size (e.g., 84x84 as commonly used in DQN)
-        processed = cv2.resize(__frame, (84, 84))
-        # Convert to grayscale
-        processed = cv2.cvtColor(processed, cv2.COLOR_RGB2GRAY)
-        # Normalize pixel values
-        processed = processed / 255.0
-        return processed
-
-    def detect_health(self, __frame: np.ndarray) -> int:
-        """
-        Detect player's health from the _frame.
-        This uses color detection to identify red hearts in The Binding of Isaac.
-
-        Args:
-            _frame (numpy.ndarray): Full game _frame
-
-        Returns:
-            float: Estimated health value
-        """
-        if not self.is_calibrated:
-            self.calibrate(__frame)
-
-        health_bar = self.roi["health_bar"]
-        if health_bar is None:
-            # If we couldn't calibrate the health bar region, return a default value
-            self.logger.warning("Health bar region not calibrated")
-            return 3  # Default to middle health value
-
-        # Type checking to help linter
-        assert health_bar is not None
-
-        # Extract health bar region
-        health_region = __frame[
-            health_bar["top"] : health_bar["top"] + health_bar["height"],
-            health_bar["left"] : health_bar["left"] + health_bar["width"],
-        ]
-
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(health_region, cv2.COLOR_RGB2HSV)
-
-        # Define red heart color range in HSV
-        # Isaac uses red hearts, so we're looking for red color
-        lower_red1 = np.array([0, 100, 100], dtype=np.uint8)
-        upper_red1 = np.array([10, 255, 255], dtype=np.uint8)
-        lower_red2 = np.array([160, 100, 100], dtype=np.uint8)  # Red wraps in HSV, so we need two ranges
-        upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
-
-        # Create masks for each red range
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask = mask1 + mask2
-
-        # Count non-zero pixels in the mask (red pixels)
-        red_pixel_count = cv2.countNonZero(mask)
-
-        # Calculate health based on red pixel count
-        # This is very approximate and needs calibration
-        # A more robust approach would be template matching heart icons
-        max_health_pixels = health_bar["width"] * health_bar["height"] * 0.5
-        health_ratio = min(1.0, red_pixel_count / max_health_pixels)
-
-        # Convert to health value (assuming max health is 6 - 3 hearts)
-        # In Isaac, health is measured in half-hearts, so 6 = 3 full hearts
-        estimated_health = round(health_ratio * 6)
-
-        self.logger.debug(
-            f"Health detection: red pixels: {red_pixel_count}, estimated health: {estimated_health}"
-        )
-
-        return estimated_health
-
-    def detect_enemies(self, _frame: np.ndarray) -> List[Dict[str, Any]]:
-        """
-        Detect enemies in the _frame.
-
-        Args:
-            _frame (numpy.ndarray): Full game _frame
-
-        Returns:
-            list: List of dictionaries containing enemy positions and estimated types
-        """
-        # Convert to HSV for better color-based detection
-        hsv = cv2.cvtColor(_frame, cv2.COLOR_RGB2HSV)
-
-        # Define a color range for enemies (this would need refinement)
-        # Many enemies in Isaac appear as darker entities against the background
-        lower_bound = np.array([0, 0, 0], dtype=np.uint8)  # Very dark colors
-        upper_bound = np.array([180, 150, 100], dtype=np.uint8)  # Not too saturated and not too bright
-
-        # Create a mask for enemy detection
-        mask = cv2.inRange(hsv, lower_bound, upper_bound)
-
-        # Apply morphological operations to clean up the mask
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-        # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        enemies = []
-        # Filter contours by size to identify potential enemies
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            # Filter out very small or very large contours
-            if 100 < area < 5000:  # Adjust these thresholds based on testing
-                x, y, w, h = cv2.boundingRect(contour)
-                center_x = x + w // 2
-                center_y = y + h // 2
-
-                enemies.append({"position": (center_x, center_y), "size": max(w, h), "area": area})
-
-        self.logger.debug(f"Detected {len(enemies)} potential enemies")
-        return enemies
-
-    def detect_doors(self, _frame: np.ndarray) -> Dict[str, bool]:
-        """
-        Detect doors in the room.
-
-        Args:
-            _frame (numpy.ndarray): Full game _frame
-
-        Returns:
-            dict: Dictionary with door directions and states (open/closed)
-        """
-        # For simplicity, we'll just detect if there are doors in cardinal directions
-        # A more robust approach would use template matching
-
-        # Get _frame dimensions
-        height, width = _frame.shape[:2]
-
-        # Check for doors in cardinal directions by examining edges of the _frame
-        # These are very approximate and would need calibration
-        door_regions = {
-            "north": _frame[
-                int(height * 0.05) : int(height * 0.15), int(width * 0.45) : int(width * 0.55)
-            ],
-            "east": _frame[
-                int(height * 0.45) : int(height * 0.55), int(width * 0.85) : int(width * 0.95)
-            ],
-            "south": _frame[
-                int(height * 0.85) : int(height * 0.95), int(width * 0.45) : int(width * 0.55)
-            ],
-            "west": _frame[
-                int(height * 0.45) : int(height * 0.55), int(width * 0.05) : int(width * 0.15)
-            ],
+        if frame is None:
+            return {
+                "health": 0.0,
+                "current_floor": 1,
+                "is_game_over": False,
+                "is_new_room": False,
+                "is_unexplored_room": False
+            }
+        
+        # Get ROIs from the frame
+        health_roi = self._get_roi(frame, "health")
+        minimap_roi = self._get_roi(frame, "minimap")
+        game_area_roi = self._get_roi(frame, "game_area")
+        
+        # Detect health
+        health = self._detect_health(health_roi)
+        
+        # Detect current floor from minimap
+        floor = self._detect_floor(minimap_roi)
+        
+        # Check if game over
+        is_game_over = self._detect_game_over(frame)
+        
+        # Generate unique hash for the current room based on game area
+        current_room_hash = self._get_room_hash(game_area_roi)
+        
+        # Check if this is a new room the player has entered
+        is_new_room = self._is_new_room(current_room_hash)
+        
+        # Check if this room has not been explored before
+        is_unexplored_room = current_room_hash not in self.explored_rooms
+        
+        # Add to explored rooms set
+        if is_new_room and is_unexplored_room:
+            self.explored_rooms.add(current_room_hash)
+        
+        # Create game state dictionary
+        game_state = {
+            "health": health,
+            "current_floor": floor,
+            "is_game_over": is_game_over,
+            "is_new_room": is_new_room,
+            "is_unexplored_room": is_unexplored_room,
         }
-
-        doors = {}
-        for direction, region in door_regions.items():
-            # Convert to grayscale
-            gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY)
-
-            # Check if the variance of the region is high (indicating a door)
-            variance = np.var(gray)
-
-            # If variance is high, there might be a door
-            doors[direction] = variance > 200  # Threshold would need calibration
-
-        self.logger.debug(f"Detected doors: {doors}")
-        return doors
-
-    def detect_player(self, _frame: np.ndarray) -> Optional[Tuple[int, int]]:
+        
+        # Save debug image if debug is enabled
+        if self.debug:
+            self._save_debug_image(frame, game_state)
+        
+        return game_state
+    
+    def _get_roi(self, frame, roi_name):
+        """Extract a region of interest from frame."""
+        if frame is None or roi_name not in self.roi_data:
+            return None
+        
+        roi = self.roi_data[roi_name]
+        height, width = frame.shape[:2]
+        
+        # Use raw values if available, otherwise calculate from percentages
+        if "x_raw" in roi and "y_raw" in roi and "width_raw" in roi and "height_raw" in roi:
+            x = int(roi["x_raw"])
+            y = int(roi["y_raw"])
+            w = int(roi["width_raw"])
+            h = int(roi["height_raw"])
+        else:
+            x = int(width * roi["x"])
+            y = int(height * roi["y"])
+            w = int(width * roi["width"])
+            h = int(height * roi["height"])
+        
+        # Ensure within frame bounds
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        w = max(1, min(w, width - x))
+        h = max(1, min(h, height - y))
+        
+        return frame[y:y+h, x:x+w]
+    
+    def _detect_health(self, health_roi):
         """
-        Detect the player character in the _frame.
-
-        Args:
-            _frame (numpy.ndarray): Full game _frame
-
-        Returns:
-            tuple: (x, y) position of the player, or None if not detected
+        Detect player health from health ROI.
+        Uses color detection to identify red hearts (filled) vs empty heart containers.
         """
+        if health_roi is None:
+            return 0.0
+        
+        # Save debug image if debug is enabled
+        if self.debug:
+            timestamp = time.time()
+            debug_path = f"debug_images/health_roi_{timestamp}.jpg"
+            cv2.imwrite(debug_path, health_roi)
+        
         # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(_frame, cv2.COLOR_RGB2HSV)
-
-        # Define color range for Isaac (typically pale/flesh colored)
-        lower_bound = np.array([0, 20, 150], dtype=np.uint8)  # Light skin tone in HSV
-        upper_bound = np.array([30, 150, 255], dtype=np.uint8)
-
-        # Create a mask for player detection
-        mask = cv2.inRange(hsv, lower_bound, upper_bound)
-
-        # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        if not contours:
-            return None
-
-        # Find the largest contour which is likely to be the player
-        largest_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest_contour)
-
-        # If the contour is too small, it's probably not the player
-        if area < 100:
-            return None
-
-        # Get the center of the contour
-        M = cv2.moments(largest_contour)
-        if M["m00"] == 0:
-            return None
-
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-
-        self.logger.debug(f"Detected player at position: ({cx}, {cy})")
-        return (cx, cy)
-
-    def detect_items(self, _frame: np.ndarray) -> List[Tuple[int, int]]:
-        """
-        Detect collectible items in the room.
-
-        Args:
-            _frame (numpy.ndarray): Full game _frame
-
-        Returns:
-            list: List of detected item positions
-        """
-        # This is a simplified implementation
-        # A more robust approach would use object detection or template matching
-
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(_frame, cv2.COLOR_RGB2HSV)
-
-        # Define color range for items (typically bright and colorful)
-        lower_bound = np.array([20, 100, 200], dtype=np.uint8)  # Bright, saturated colors
-        upper_bound = np.array([140, 255, 255], dtype=np.uint8)
-
-        # Create a mask for item detection
-        mask = cv2.inRange(hsv, lower_bound, upper_bound)
-
+        hsv = cv2.cvtColor(health_roi, cv2.COLOR_BGR2HSV)
+        
+        # Color masks for different heart types
+        
+        # Red hearts (filled) - these are the most important for health
+        # Red in HSV wraps around 0/180
+        lower_red1 = np.array([0, 150, 150])   # Increased saturation and value for more specific detection
+        upper_red1 = np.array([15, 255, 255])  # Wider hue range to catch more red variants
+        lower_red2 = np.array([160, 150, 150]) # Upper red hue range
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = cv2.bitwise_or(mask_red1, mask_red2)
+        
         # Apply morphological operations to clean up the mask
         kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
+        clean_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+        clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_OPEN, kernel)
+        
+        # Save debug mask if debug is enabled
+        if self.debug:
+            cv2.imwrite(f"debug_images/health_mask_{timestamp}.jpg", clean_mask)
+        
         # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        items = []
+        contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Debug image
+        if self.debug:
+            debug_img = health_roi.copy()
+            # Draw all contours in blue first
+            cv2.drawContours(debug_img, contours, -1, (255, 0, 0), 1)
+        
+        # Analyze contours to count hearts
+        hearts = 0
+        min_heart_area = 25  # Minimum area to be considered a heart
+        max_heart_area = 500  # Maximum area for a heart
+        
+        # Look for contours that could be heart pieces (each half heart = 1 health point)
         for contour in contours:
             area = cv2.contourArea(contour)
-            # Filter by size to exclude noise and large objects
-            if 20 < area < 500:  # Adjust thresholds based on testing
-                x, y, w, h = cv2.boundingRect(contour)
-                items.append((x + w // 2, y + h // 2))
-
-        self.logger.debug(f"Detected {len(items)} potential items")
-        return items
-
-    def detect_game_state(self, _frame: np.ndarray) -> Dict[str, Any]:
-        """
-        Detect the current state of the game (room layout, enemies, items, etc.)
-        Args:
-            _frame (numpy.ndarray): Raw _frame (not the processed 84x84 one)
-        Returns:
-            dict: Game state information
-        """
-        if not self.is_calibrated:
-            self.calibrate(_frame)
-
-        game_state = {
-            "player_health": self.detect_health(_frame),
-            "player_position": self.detect_player(_frame),
-            "enemies": self.detect_enemies(_frame),
-            "doors": self.detect_doors(_frame),
-            "items": self.detect_items(_frame),
-            "room_layout": None,  # This would require more complex analysis
-        }
-
-        return game_state
-
-    def save_debug__frame(
-        self, _frame: np.ndarray, game_state: Dict[str, Any], filename: str = "debug__frame.jpg"
-    ) -> None:
-        """
-        Save a debug _frame with annotations showing what was detected.
-        Useful for debugging and visualizing the detection algorithms.
-
-        Args:
-            _frame (numpy.ndarray): Original game _frame
-            game_state (dict): Detected game state information
-            filename (str): Output filename
-        """
-        # Make a copy of the _frame to draw on
-        debug__frame = _frame.copy()
-
-        # Draw player position
-        if game_state["player_position"]:
-            x, y = game_state["player_position"]
-            cv2.circle(debug__frame, (x, y), 15, (0, 255, 0), 2)
+            
+            # Filter by area
+            if area < min_heart_area or area > max_heart_area:
+                continue
+            
+            # Get bounding box for aspect ratio
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect_ratio = float(w) / h if h > 0 else 0
+            
+            # Hearts typically have aspect ratio close to 1 (roughly square)
+            if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+                continue
+            
+            # This is likely a heart or part of a heart
+            # The area will determine if it's a full or partial heart
+            if area > 100:
+                # Likely a full heart (2 health points)
+                health_points = 2
+                color = (0, 255, 0)  # Green for full heart
+            else:
+                # Likely a half heart (1 health point)
+                health_points = 1
+                color = (0, 255, 255)  # Yellow for half heart
+            
+            hearts += health_points
+            
+            # Draw for debug
+            if self.debug:
+                cv2.drawContours(debug_img, [contour], 0, color, 2)
+                cv2.putText(
+                    debug_img,
+                    f"{health_points}hp",
+                    (x, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    color,
+                    1,
+                )
+        
+        # Cap health at a reasonable maximum
+        max_health = 12  # 6 full hearts
+        hearts = min(hearts, max_health)
+        
+        # Save debug visualization
+        if self.debug:
             cv2.putText(
-                debug__frame, "Player", (x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1
-            )
-
-        # Draw enemies
-        for i, enemy in enumerate(game_state["enemies"]):
-            x, y = enemy["position"]
-            cv2.circle(debug__frame, (x, y), 10, (0, 0, 255), 2)
-            cv2.putText(
-                debug__frame, f"Enemy {i}", (x + 5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1
-            )
-
-        # Draw items
-        for i, item_pos in enumerate(game_state["items"]):
-            x, y = item_pos
-            cv2.circle(debug__frame, (x, y), 5, (255, 255, 0), 2)
-            cv2.putText(
-                debug__frame,
-                f"Item {i}",
-                (x + 5, y),
+                debug_img,
+                f"Total health: {hearts}",
+                (10, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (255, 255, 0),
+                (255, 255, 255),
                 1,
             )
+            cv2.imwrite(f"debug_images/health_debug_{timestamp}.jpg", debug_img)
+            print(f"Detected health: {hearts}")
+        
+        return hearts
+    
+    def _detect_floor(self, minimap_roi):
+        """
+        Track the current floor based on transition events.
+        Since we can't directly detect the floor from visuals reliably,
+        we'll need to track when the player moves between floors.
+        """
+        # This is a simple placeholder that returns our tracked floor
+        # In a real implementation, we would detect floor transitions
+        
+        # Initialize floor number if we haven't yet
+        if not hasattr(self, '_current_floor'):
+            self._current_floor = 1
+        
+        # In an actual implementation, we would detect:
+        # 1. Trapdoor usage
+        # 2. Floor transition screens 
+        # 3. Other visual cues indicating floor changes
+        
+        # For now, we'll just return our tracked floor
+        # We can manually adjust this when testing
+        
+        # Debug info
+        if self.debug and minimap_roi is not None:
+            timestamp = time.time()
+            cv2.imwrite(f"debug_images/minimap_{timestamp}.jpg", minimap_roi)
+            
+            # Create debug visualization
+            debug_img = minimap_roi.copy()
+            cv2.putText(
+                debug_img, 
+                f"Floor (tracked): {self._current_floor}", 
+                (10, 20), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                0.5, 
+                (0, 255, 0), 
+                1
+            )
+            cv2.imwrite(f"debug_images/floor_debug_{timestamp}.jpg", debug_img)
+        
+        return self._current_floor
+    
+    def _detect_game_over(self, frame):
+        """
+        Detect if the game is over.
+        Looks for the game over screen which has specific colors and text.
+        """
+        if frame is None:
+            return False
+            
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Check if mostly dark with some bright text (game over screen)
+        dark_ratio = np.sum(gray < 30) / (gray.shape[0] * gray.shape[1])
+        bright_points = np.sum(gray > 200)
+        
+        # Debug visualization
+        if self.debug:
+            timestamp = time.time()
+            debug_img = frame.copy()
+            cv2.putText(debug_img, f"Dark ratio: {dark_ratio:.2f}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(debug_img, f"Bright points: {bright_points}", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imwrite(f"debug_images/game_over_debug_{timestamp}.jpg", debug_img)
+        
+        # If mostly dark (>90%) but has some bright spots, likely game over screen
+        return dark_ratio > 0.9 and bright_points > 1000
+    
+    def _get_room_hash(self, game_area_roi):
+        """
+        Generate a hash for the current room to track exploration.
+        Uses downsampled, blurred game area to get a stable room identifier.
+        """
+        if game_area_roi is None:
+            return "none"
+            
+        # Resize to small size to remove noise and details
+        small = cv2.resize(game_area_roi, (32, 24))
+        
+        # Blur to further remove noise
+        blurred = cv2.GaussianBlur(small, (3, 3), 0)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate mean hash of image
+        # First, resize to 8x8
+        resized = cv2.resize(gray, (8, 8))
+        # Get average pixel value
+        avg_pixel = resized.mean()
+        # Create hash: 1 if pixel > avg, 0 otherwise
+        hash_array = (resized > avg_pixel).flatten()
+        # Convert to hash string
+        hash_str = ''.join(['1' if x else '0' for x in hash_array])
+        
+        # Debug visualization
+        if self.debug:
+            timestamp = time.time()
+            # Create visualization of room hash process
+            debug_img = np.hstack([
+                cv2.resize(game_area_roi, (320, 240)),
+                cv2.resize(cv2.cvtColor(blurred, cv2.COLOR_BGR2RGB), (320, 240)),
+                cv2.resize(cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR), (320, 240))
+            ])
+            cv2.putText(debug_img, f"Room hash: {hash_str[:16]}...", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imwrite(f"debug_images/room_hash_debug_{timestamp}.jpg", debug_img)
+        
+        return hash_str
+    
+    def _is_new_room(self, current_hash):
+        """
+        Check if the current room is new (player just entered it).
+        Uses a simple hash comparison approach.
+        """
+        # Check if we have a last room hash
+        if not hasattr(self, '_last_room_hash'):
+            self._last_room_hash = None
+        
+        # If same as last hash, not a new room
+        if self._last_room_hash == current_hash:
+            return False
+        
+        # Store current hash for next comparison
+        is_new = True
+        self._last_room_hash = current_hash
+        
+        return is_new
+    
+    def _save_debug_image(self, frame, game_state):
+        """Save a debug image with game state visualization."""
+        if frame is None:
+            return
+            
+        debug_img = frame.copy()
+        timestamp = time.time()
+        
+        # Draw game state info on the frame
+        cv2.putText(debug_img, f"Health: {game_state['health']}", (20, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Floor: {game_state['current_floor']}", (20, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"New room: {game_state['is_new_room']}", (20, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Unexplored: {game_state['is_unexplored_room']}", (20, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Game over: {game_state['is_game_over']}", (20, 150), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Draw ROI rectangles
+        frame_h, frame_w = frame.shape[:2]
+        
+        for roi_name in ["health", "minimap", "game_area"]:
+            if roi_name in self.roi_data:
+                roi = self.roi_data[roi_name]
+                
+                # Use raw values if available, otherwise calculate from percentages
+                if "x_raw" in roi and "y_raw" in roi and "width_raw" in roi and "height_raw" in roi:
+                    x = int(roi["x_raw"])
+                    y = int(roi["y_raw"])
+                    w = int(roi["width_raw"])
+                    h = int(roi["height_raw"])
+                else:
+                    x = int(frame_w * roi["x"])
+                    y = int(frame_h * roi["y"])
+                    w = int(frame_w * roi["width"])
+                    h = int(frame_h * roi["height"])
+                
+                color = (0, 255, 0) if roi_name == "game_area" else (0, 0, 255)
+                cv2.rectangle(debug_img, (x, y), (x+w, y+h), color, 2)
+                cv2.putText(debug_img, roi_name, (x, y-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        # Save the image
+        cv2.imwrite(f"debug_images/game_state_{timestamp}.jpg", debug_img)
 
-        # Draw health info
-        health_text = f"Health: {game_state['player_health']}"
-        cv2.putText(debug__frame, health_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
-        # Draw door info
-        door_text = "Doors: " + ", ".join(
-            [d for d, exists in game_state["doors"].items() if exists]
-        )
-        cv2.putText(
-            debug__frame, door_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
-        )
-
-        # Save the image with IMWRITE_JPEG_QUALITY flag to ensure overwrite
-        cv2.imwrite(filename, cv2.cvtColor(debug__frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
-        self.logger.info(f"Saved debug _frame to {filename}")
+    def save_debug_frame(self, frame, game_state, filename):
+        """Save a debug visualization of the game state to a file"""
+        if frame is None:
+            print("Cannot save debug frame - frame is None")
+            return
+        
+        # Create a copy of the frame to draw on
+        debug_img = frame.copy()
+        
+        # Draw game state info on the frame
+        cv2.putText(debug_img, f"Health: {game_state['health']}", (20, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Floor: {game_state['current_floor']}", (20, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"New room: {game_state['is_new_room']}", (20, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Unexplored: {game_state['is_unexplored_room']}", (20, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_img, f"Game over: {game_state['is_game_over']}", (20, 150), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # Draw ROI rectangles
+        frame_h, frame_w = frame.shape[:2]
+        
+        for roi_name in ["health", "minimap", "game_area"]:
+            if roi_name in self.roi_data:
+                roi = self.roi_data[roi_name]
+                
+                # Use raw values if available, otherwise calculate from percentages
+                if "x_raw" in roi and "y_raw" in roi and "width_raw" in roi and "height_raw" in roi:
+                    x = int(roi["x_raw"])
+                    y = int(roi["y_raw"])
+                    w = int(roi["width_raw"])
+                    h = int(roi["height_raw"])
+                else:
+                    x = int(frame_w * roi["x"])
+                    y = int(frame_h * roi["y"])
+                    w = int(frame_w * roi["width"])
+                    h = int(frame_h * roi["height"])
+                
+                color = (0, 255, 0) if roi_name == "game_area" else (0, 0, 255)
+                cv2.rectangle(debug_img, (x, y), (x+w, y+h), color, 2)
+                cv2.putText(debug_img, roi_name, (x, y-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        # Create directories if needed
+        os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else ".", exist_ok=True)
+        
+        # Save the image
+        cv2.imwrite(filename, debug_img)
+        print(f"Saved debug visualization to {filename}")
 
 
 if __name__ == "__main__":
@@ -646,18 +706,18 @@ if __name__ == "__main__":
 
     # Capture _frame and detect game state
     _frame = capture.capture_game_window()
-    game_state = capture.detect_game_state(_frame)
+    game_state = capture.get_game_state(_frame)
 
     # Save debug _frame
-    capture.save_debug__frame(_frame, game_state)
+    capture.save_debug_frame(_frame, game_state, "debug_frame.jpg")
 
     # Print detected state
     print("\nDetected Game State:")
-    print(f"Player Health: {game_state['player_health']}")
-    print(f"Player Position: {game_state['player_position']}")
-    print(f"Number of Enemies: {len(game_state['enemies'])}")
-    print(f"Doors: {[d for d, exists in game_state['doors'].items() if exists]}")
-    print(f"Number of Items: {len(game_state['items'])}")
+    print(f"Player Health: {game_state['health']}")
+    print(f"Game Over: {game_state['is_game_over']}")
+    print(f"New Room: {game_state['is_new_room']}")
+    print(f"Unexplored Room: {game_state['is_unexplored_room']}")
+    print(f"Current Floor: {game_state['current_floor']}")
 
-    print("\nSaved debug _frame to debug__frame.jpg")
+    print("\nSaved debug _frame to debug_frame.jpg")
     print("Review this image to adjust detection parameters as needed.")

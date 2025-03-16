@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+    <name>Isaac Game State Reader</name>
+    <directory>IsaacGameStateReader</directory>
+    <id>2142957403</id>
+    <description>Reads game state data from Isaac and saves it to a file for external use.</description>
+    <version>1.0</version>
+    <visibility>Private</visibility>
+</metadata> 
