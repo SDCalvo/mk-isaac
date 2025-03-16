@@ -17,6 +17,11 @@ isaac-ai = {editable = true, path = "."}
 opencv-stubs = "*"
 
 [dev-packages]
+flake8 = "*"
+isort = "*"
+mypy = "*"
+pre-commit = "*"
+black = "*"
 
 [requires]
 python_version = "3.12"
@@ -27,3 +32,5 @@ train = "python -m src.train"
 play = "python -m src.play"
 test-detection = "python -m src.test_detection"
 test-detection-safe = "python -m src.test_detection_safe"
+lint = "pre-commit run --all-files"
+format = "black ."
