@@ -24,3 +24,4 @@ python_full_version = "3.12.2"
 [scripts]
 train = "python -m src.train"
 play = "python -m src.play"
+test-detection = "python -m src.test_detection"
