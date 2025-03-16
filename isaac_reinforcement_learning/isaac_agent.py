@@ -18,13 +18,12 @@ import numpy as np
 import sys
 import os
 
-# Add the communication directory to the path so we can import the game state reader
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(script_dir)
-communication_dir = os.path.join(project_root, "isaac_communication")
-sys.path.append(communication_dir)
+# Use proper relative imports
+# Get the parent directory (project root) in the path if needed
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from isaac_game_state_reader import IsaacGameStateReader
+# Import the game state reader from the communication package
+from isaac_communication.isaac_game_state_reader import IsaacGameStateReader
 
 class SimpleIsaacAgent:
     """A simple agent that can play The Binding of Isaac"""

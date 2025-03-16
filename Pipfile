@@ -16,6 +16,7 @@ matplotlib = "*"
 isaac-ai = {editable = true, path = "."}
 opencv-stubs = "*"
 pywin32 = "*"
+gymnasium = "*"
 
 [dev-packages]
 flake8 = "*"
@@ -23,6 +24,9 @@ isort = "*"
 mypy = "*"
 pre-commit = "*"
 black = "*"
+pytest = "*"
+pytest-cov = "*"
+pylint = "*"
 
 [requires]
 python_version = "3.12"

@@ -7,6 +7,7 @@ using the IsaacEnv environment wrapper.
 """
 
 import os
+import sys
 import time
 import argparse
 import numpy as np
@@ -16,7 +17,12 @@ import torch.optim as optim
 from torch.utils.tensorboard.writer import SummaryWriter
 from collections import deque
 import random
-from isaac_gym_env import IsaacEnv
+
+# Add the project root to the path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import the environment
+from isaac_reinforcement_learning.isaac_gym_env import IsaacEnv
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,60 +40,47 @@ class DQNNetwork(nn.Module):
         # Calculate input size from observation space
         self.input_size = (
             1 +  # health
-            1 +  # max_health
-            1 +  # soul_hearts
-            1 +  # damage
-            1 +  # fire_rate
-            1 +  # speed
+            2 +  # position (x, y)
             1 +  # stage
-            1 +  # room_cleared
-            1 +  # enemies
-            20   # enemy_positions (10 enemies * 2 coordinates)
+            1 +  # room_clear
+            1    # enemy_count
         )
         
         # Number of actions
         self.action_size = action_space.n
         
-        # Network layers
+        # Define the network architecture
         self.fc1 = nn.Linear(self.input_size, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 64)
-        self.fc4 = nn.Linear(64, self.action_size)
+        self.fc2 = nn.Linear(128, 256)
+        self.fc3 = nn.Linear(256, 128)
+        self.fc4 = nn.Linear(128, self.action_size)
         
-        # Activation functions
-        self.relu = nn.ReLU()
-    
     def forward(self, state_dict):
         """
         Forward pass through the network
         
         Args:
-            state_dict: Dictionary of state observations
+            state_dict: Dictionary containing observation values
             
         Returns:
-            Q-values for each action
+            torch.Tensor: Q-values for each action
         """
-        # Convert dictionary of observations to flat tensor
+        # Convert state dict to tensor
         x = torch.cat([
             state_dict['health'],
-            state_dict['max_health'],
-            state_dict['soul_hearts'],
-            state_dict['damage'],
-            state_dict['fire_rate'],
-            state_dict['speed'],
-            state_dict['stage'].float(),
-            torch.tensor([[float(state_dict['room_cleared'])]], device=device),
-            state_dict['enemies'].float(),
-            state_dict['enemy_positions'].flatten().unsqueeze(0)
+            state_dict['position'],
+            state_dict['stage'],
+            state_dict['room_clear'],
+            state_dict['enemy_count']
         ], dim=1)
         
-        # Forward pass
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.relu(self.fc3(x))
-        q_values = self.fc4(x)
+        # Pass through network
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        x = self.fc4(x)
         
-        return q_values
+        return x
 
 class ReplayBuffer:
     """
@@ -110,15 +103,10 @@ class ReplayBuffer:
         # Create empty batch for each observation
         states = {
             'health': [],
-            'max_health': [],
-            'soul_hearts': [],
-            'damage': [],
-            'fire_rate': [],
-            'speed': [],
+            'position': [],
             'stage': [],
-            'room_cleared': [],
-            'enemies': [],
-            'enemy_positions': []
+            'room_clear': [],
+            'enemy_count': []
         }
         
         actions = []
@@ -126,15 +114,10 @@ class ReplayBuffer:
         
         next_states = {
             'health': [],
-            'max_health': [],
-            'soul_hearts': [],
-            'damage': [],
-            'fire_rate': [],
-            'speed': [],
+            'position': [],
             'stage': [],
-            'room_cleared': [],
-            'enemies': [],
-            'enemy_positions': []
+            'room_clear': [],
+            'enemy_count': []
         }
         
         dones = []
@@ -158,13 +141,7 @@ class ReplayBuffer:
         
         # Convert to tensors
         for key in states:
-            # Special case for room_cleared which is a discrete space
-            if key == 'room_cleared':
-                states[key] = torch.tensor(states[key], device=device).float().unsqueeze(1)
-                next_states[key] = torch.tensor(next_states[key], device=device).float().unsqueeze(1)
-            else:
-                states[key] = torch.tensor(np.array(states[key]), device=device).float()
-                next_states[key] = torch.tensor(np.array(next_states[key]), device=device).float()
+            states[key] = torch.tensor(np.array(states[key]), device=device).float()
         
         actions = torch.tensor(actions, device=device).long().unsqueeze(1)
         rewards = torch.tensor(rewards, device=device).float().unsqueeze(1)
@@ -234,10 +211,7 @@ class DQNAgent:
                 # Convert state to tensors
                 state_tensors = {}
                 for key in state:
-                    if key == 'room_cleared':
-                        state_tensors[key] = torch.tensor([[float(state[key])]], device=device)
-                    else:
-                        state_tensors[key] = torch.tensor(state[key], device=device).float()
+                    state_tensors[key] = torch.tensor(state[key], device=device).float()
                 
                 # Get Q-values
                 q_values = self.policy_net(state_tensors)
@@ -443,8 +417,6 @@ class DQNAgent:
 
 def main():
     parser = argparse.ArgumentParser(description="Train Isaac DQN Agent")
-    parser.add_argument('--game-dir', type=str, default="E:\\Steam\\steamapps\\common\\The Binding of Isaac Rebirth",
-                       help="Path to The Binding of Isaac Rebirth game directory")
     parser.add_argument('--episodes', type=int, default=1000,
                        help="Number of episodes to train for")
     parser.add_argument('--max-steps', type=int, default=2000,
@@ -460,8 +432,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Create environment
-    env = IsaacEnv(game_dir=args.game_dir)
+    # Create environment - removed game_dir parameter
+    env = IsaacEnv()
     
     # Create agent
     agent = DQNAgent(env, model_dir=args.model_dir, log_dir=args.log_dir)
