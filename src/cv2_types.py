@@ -9,7 +9,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 # Define Mat type for OpenCV
-Mat = Union[NDArray[np.uint8], NDArray[np.float32], NDArray[np.float64]]
+Mat = Union[
+    NDArray[np.uint8], 
+    NDArray[np.float32], 
+    NDArray[np.float64],
+    NDArray[Any]  # Allow any array type to be compatible with Mat
+]
 
 
 # Basic OpenCV functions

@@ -6,6 +6,7 @@
     "reportUnknownMemberType": false,
     "reportUnknownVariableType": false,
     "reportUnknownArgumentType": false,
+    "reportArgumentType": false,
     "reportUnboundVariable": true,
     "typeCheckingMode": "basic"
 }

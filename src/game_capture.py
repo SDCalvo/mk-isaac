@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 # Type information for cv2 methods is provided in cv2_stubs.py
 # pyright: reportMissingImports=false
+# pyright: reportArgumentType=false
 import cv2
 import numpy as np
 from mss import mss
@@ -47,16 +48,16 @@ class GameCapture:
         # Color ranges for object detection
         self.color_ranges = {
             "player": {
-                "lower": np.array([200, 0, 0]),
-                "upper": np.array([255, 100, 100]),
+                "lower": np.array([200, 0, 0], dtype=np.uint8),
+                "upper": np.array([255, 100, 100], dtype=np.uint8),
             },  # Red for player
             "enemy": {
-                "lower": np.array([0, 0, 100]),
-                "upper": np.array([100, 100, 255]),
+                "lower": np.array([0, 0, 100], dtype=np.uint8),
+                "upper": np.array([100, 100, 255], dtype=np.uint8),
             },  # Blue for enemies
             "pickup": {
-                "lower": np.array([200, 200, 0]),
-                "upper": np.array([255, 255, 100]),
+                "lower": np.array([200, 200, 0], dtype=np.uint8),
+                "upper": np.array([255, 255, 100], dtype=np.uint8),
             },  # Yellow for pickups
         }
 
@@ -180,10 +181,10 @@ class GameCapture:
 
         # Define red heart color range in HSV
         # Isaac uses red hearts, so we're looking for red color
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([160, 100, 100])  # Red wraps in HSV, so we need two ranges
-        upper_red2 = np.array([180, 255, 255])
+        lower_red1 = np.array([0, 100, 100], dtype=np.uint8)
+        upper_red1 = np.array([10, 255, 255], dtype=np.uint8)
+        lower_red2 = np.array([160, 100, 100], dtype=np.uint8)  # Red wraps in HSV, so we need two ranges
+        upper_red2 = np.array([180, 255, 255], dtype=np.uint8)
 
         # Create masks for each red range
         mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
@@ -224,8 +225,8 @@ class GameCapture:
 
         # Define a color range for enemies (this would need refinement)
         # Many enemies in Isaac appear as darker entities against the background
-        lower_bound = np.array([0, 0, 0])  # Very dark colors
-        upper_bound = np.array([180, 150, 100])  # Not too saturated and not too bright
+        lower_bound = np.array([0, 0, 0], dtype=np.uint8)  # Very dark colors
+        upper_bound = np.array([180, 150, 100], dtype=np.uint8)  # Not too saturated and not too bright
 
         # Create a mask for enemy detection
         mask = cv2.inRange(hsv, lower_bound, upper_bound)
@@ -314,8 +315,8 @@ class GameCapture:
         hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
         # Define color range for Isaac (typically pale/flesh colored)
-        lower_bound = np.array([0, 20, 150])  # Light skin tone in HSV
-        upper_bound = np.array([30, 150, 255])
+        lower_bound = np.array([0, 20, 150], dtype=np.uint8)  # Light skin tone in HSV
+        upper_bound = np.array([30, 150, 255], dtype=np.uint8)
 
         # Create a mask for player detection
         mask = cv2.inRange(hsv, lower_bound, upper_bound)
@@ -362,8 +363,8 @@ class GameCapture:
         hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
         # Define color range for items (typically bright and colorful)
-        lower_bound = np.array([20, 100, 200])  # Bright, saturated colors
-        upper_bound = np.array([140, 255, 255])
+        lower_bound = np.array([20, 100, 200], dtype=np.uint8)  # Bright, saturated colors
+        upper_bound = np.array([140, 255, 255], dtype=np.uint8)
 
         # Create a mask for item detection
         mask = cv2.inRange(hsv, lower_bound, upper_bound)
