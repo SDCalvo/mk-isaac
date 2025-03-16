@@ -14,6 +14,7 @@ keyboard = "*"
 pyautogui = "*"
 matplotlib = "*"
 isaac-ai = {editable = true, path = "."}
+opencv-stubs = "*"
 
 [dev-packages]
 

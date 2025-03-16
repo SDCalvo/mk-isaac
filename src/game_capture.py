@@ -1,8 +1,18 @@
 import numpy as np
+# Type information for cv2 methods is provided in cv2_stubs.py
+# pyright: reportMissingImports=false
 import cv2
 from mss import mss
 from PIL import Image
 import logging
+from typing import Dict, Any, Tuple, List, Optional, Union, TypedDict
+
+# Define TypedDict for ROI dictionaries
+class RoiDict(TypedDict):
+    left: int
+    top: int
+    width: int
+    height: int
 
 class GameCapture:
     def __init__(self):
@@ -16,7 +26,7 @@ class GameCapture:
         
         # Define regions of interest (ROIs) for different game elements
         # These will need to be calibrated based on your specific game window size
-        self.roi = {
+        self.roi: Dict[str, Optional[RoiDict]] = {
             "health_bar": None,  # Will be set during calibration
             "minimap": None,     # Region for the minimap/floor layout
             "item_display": None # Region for currently held items
@@ -41,7 +51,7 @@ class GameCapture:
         # Flag to indicate if calibration has been performed
         self.is_calibrated = False
         
-    def calibrate(self, frame):
+    def calibrate(self, frame: np.ndarray) -> None:
         """
         Calibrate the detection regions based on a reference frame.
         This needs to be called once at the start with a clear view of the game UI.
@@ -83,7 +93,7 @@ class GameCapture:
         
         # TODO: Load templates for health, doors, etc. if using template matching
         
-    def capture_game_window(self, region=None):
+    def capture_game_window(self, region: Optional[Tuple[int, int, int, int]] = None) -> np.ndarray:
         """
         Capture a specific region of the screen.
         Args:
@@ -93,7 +103,7 @@ class GameCapture:
         """
         if region is None:
             # Default to full monitor
-            region = {
+            region_dict = {
                 "left": self.monitor["left"],
                 "top": self.monitor["top"],
                 "width": self.monitor["width"],
@@ -101,19 +111,19 @@ class GameCapture:
             }
         else:
             left, top, width, height = region
-            region = {
+            region_dict = {
                 "left": left,
                 "top": top,
                 "width": width,
                 "height": height
             }
             
-        screenshot = self.sct.grab(region)
+        screenshot = self.sct.grab(region_dict)
         # Convert to PIL Image and then to RGB numpy array
         frame = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
         return np.array(frame)
     
-    def process_frame(self, frame):
+    def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
         Process the captured frame for AI input.
         Args:
@@ -129,7 +139,7 @@ class GameCapture:
         processed = processed / 255.0
         return processed
     
-    def detect_health(self, frame):
+    def detect_health(self, frame: np.ndarray) -> int:
         """
         Detect player's health from the frame.
         This uses color detection to identify red hearts in The Binding of Isaac.
@@ -143,10 +153,19 @@ class GameCapture:
         if not self.is_calibrated:
             self.calibrate(frame)
             
+        health_bar = self.roi["health_bar"]
+        if health_bar is None:
+            # If we couldn't calibrate the health bar region, return a default value
+            self.logger.warning("Health bar region not calibrated")
+            return 3  # Default to middle health value
+            
+        # Type checking to help linter
+        assert health_bar is not None
+        
         # Extract health bar region
         health_region = frame[
-            self.roi["health_bar"]["top"]:self.roi["health_bar"]["top"] + self.roi["health_bar"]["height"],
-            self.roi["health_bar"]["left"]:self.roi["health_bar"]["left"] + self.roi["health_bar"]["width"]
+            health_bar["top"]:health_bar["top"] + health_bar["height"],
+            health_bar["left"]:health_bar["left"] + health_bar["width"]
         ]
         
         # Convert to HSV for better color detection
@@ -170,7 +189,7 @@ class GameCapture:
         # Calculate health based on red pixel count
         # This is very approximate and needs calibration
         # A more robust approach would be template matching heart icons
-        max_health_pixels = self.roi["health_bar"]["width"] * self.roi["health_bar"]["height"] * 0.5
+        max_health_pixels = health_bar["width"] * health_bar["height"] * 0.5
         health_ratio = min(1.0, red_pixel_count / max_health_pixels)
         
         # Convert to health value (assuming max health is 6 - 3 hearts)
@@ -181,7 +200,7 @@ class GameCapture:
         
         return estimated_health
     
-    def detect_enemies(self, frame):
+    def detect_enemies(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """
         Detect enemies in the frame.
         
@@ -229,7 +248,7 @@ class GameCapture:
         self.logger.debug(f"Detected {len(enemies)} potential enemies")
         return enemies
     
-    def detect_doors(self, frame):
+    def detect_doors(self, frame: np.ndarray) -> Dict[str, bool]:
         """
         Detect doors in the room.
         
@@ -268,7 +287,7 @@ class GameCapture:
         self.logger.debug(f"Detected doors: {doors}")
         return doors
     
-    def detect_player(self, frame):
+    def detect_player(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
         """
         Detect the player character in the frame.
         
@@ -313,7 +332,7 @@ class GameCapture:
         self.logger.debug(f"Detected player at position: ({cx}, {cy})")
         return (cx, cy)
     
-    def detect_items(self, frame):
+    def detect_items(self, frame: np.ndarray) -> List[Tuple[int, int]]:
         """
         Detect collectible items in the room.
         
@@ -354,7 +373,7 @@ class GameCapture:
         self.logger.debug(f"Detected {len(items)} potential items")
         return items
     
-    def detect_game_state(self, frame):
+    def detect_game_state(self, frame: np.ndarray) -> Dict[str, Any]:
         """
         Detect the current state of the game (room layout, enemies, items, etc.)
         Args:
@@ -376,7 +395,7 @@ class GameCapture:
         
         return game_state
     
-    def save_debug_frame(self, frame, game_state, filename="debug_frame.jpg"):
+    def save_debug_frame(self, frame: np.ndarray, game_state: Dict[str, Any], filename: str = "debug_frame.jpg") -> None:
         """
         Save a debug frame with annotations showing what was detected.
         Useful for debugging and visualizing the detection algorithms.
