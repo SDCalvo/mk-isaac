@@ -1,0 +1,26 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "*"
+opencv-python = "*"
+pillow = "*"
+torch = "*"
+torchvision = "*"
+mss = "*"
+keyboard = "*"
+pyautogui = "*"
+matplotlib = "*"
+isaac-ai = {editable = true, path = "."}
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"
+python_full_version = "3.12.2"
+
+[scripts]
+train = "python -m src.train"
+play = "python -m src.play"

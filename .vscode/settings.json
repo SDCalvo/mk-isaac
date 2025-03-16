@@ -1,0 +1,10 @@
+{
+    "python.analysis.extraPaths": [
+        "src"
+    ],
+    "python.autoComplete.extraPaths": [
+        "src"
+    ],
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.defaultInterpreterPath": "${env:USERPROFILE}\\.virtualenvs\\cursor-ntLong3j\\Scripts\\python.exe"
+}
