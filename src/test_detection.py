@@ -5,9 +5,11 @@ This script will capture frames from the game and display the detected game stat
 
 import os
 import time
-
+import argparse
 import cv2
 import numpy as np
+from mss import mss
+from PIL import Image
 
 try:
     from src.game_capture import GameCapture
@@ -23,8 +25,9 @@ def test_calibration():
 
     print("Starting calibration test...")
     print("Please have The Binding of Isaac game window visible.")
-    print("Capturing in 3 seconds...")
-    time.sleep(3)
+    print("Switch to the game and unpause.")
+    print("Capturing in 5 seconds...")
+    time.sleep(5)
 
     # Capture frame
     frame = capture.capture_game_window()
@@ -65,7 +68,30 @@ def test_calibration():
     print("Saved calibration visualization to debug/calibration.jpg")
 
 
-def test_state_detection(num_frames=5, delay=1.0):
+def focus_game_window():
+    """Focus the game window once at the start"""
+    import win32gui
+    import win32con
+
+    def callback(hwnd, windows):
+        if win32gui.IsWindowVisible(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if "isaac" in title.lower():
+                windows.append(hwnd)
+        return True
+
+    windows = []
+    win32gui.EnumWindows(callback, windows)
+
+    if windows:
+        hwnd = windows[0]
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    return False
+
+
+def test_state_detection(num_frames=5, delay=2.0):
     """
     Test state detection by capturing multiple frames and saving debug visualizations.
 
@@ -79,21 +105,84 @@ def test_state_detection(num_frames=5, delay=1.0):
 
     print(f"Starting state detection test for {num_frames} frames...")
     print("Please have The Binding of Isaac game window visible.")
-    print("Capturing will begin in 3 seconds...")
-    time.sleep(3)
+    print("Finding and focusing the game window...")
+    
+    # Find the Isaac window
+    def find_isaac_window():
+        import win32gui
+        import win32con
+        from ctypes import windll
 
+        def callback(hwnd, windows):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if "isaac" in title.lower():
+                    windows.append(hwnd)
+            return True
+
+        windows = []
+        win32gui.EnumWindows(callback, windows)
+        if windows:
+            return windows[0]
+        return None
+    
+    # Get the Isaac window
+    isaac_hwnd = find_isaac_window()
+    if isaac_hwnd:
+        print("Found Isaac window. Focusing and unpausing once...")
+        # Focus and unpause once at the beginning
+        import win32gui
+        import win32con
+        from ctypes import windll
+        
+        # Restore and focus
+        win32gui.ShowWindow(isaac_hwnd, win32con.SW_RESTORE)
+        time.sleep(0.1)
+        win32gui.SetForegroundWindow(isaac_hwnd)
+        time.sleep(0.3)
+        
+        # Unpause with ESC key
+        windll.user32.PostMessageW(isaac_hwnd, win32con.WM_KEYDOWN, win32con.VK_ESCAPE, 0)
+        time.sleep(0.05)
+        windll.user32.PostMessageW(isaac_hwnd, win32con.WM_KEYUP, win32con.VK_ESCAPE, 0)
+        
+        # Wait longer for the pause menu to fully disappear
+        print("Waiting for pause menu to disappear...")
+        time.sleep(1.5)
+    else:
+        print("Could not find the Isaac window. Please focus it manually.")
+    
+    # Function to take a screenshot without trying to unpause
+    def take_screenshot(idx):
+        # Capture frame directly without focusing/unpausing
+        frame = None
+        if isaac_hwnd:
+            # Get window dimensions
+            left, top, right, bottom = win32gui.GetWindowRect(isaac_hwnd)
+            # Take screenshot with MSS directly
+            with mss() as sct:
+                region = {"left": left, "top": top, "width": right - left, "height": bottom - top}
+                screenshot = sct.grab(region)
+                frame = np.array(Image.frombytes("RGB", screenshot.size, screenshot.rgb))
+        else:
+            # Fall back to regular capture if no window found
+            frame = capture.capture_game_window(no_unpause=True)
+        
+        return frame
+    
     for i in range(num_frames):
         print(f"Capturing frame {i+1}/{num_frames}...")
 
-        # Capture frame
-        frame = capture.capture_game_window()
+        # Capture frame without unpausing
+        frame = take_screenshot(i)
 
         # Detect game state
         game_state = capture.detect_game_state(frame)
 
-        # Save debug frame
-        filename = f"debug/frame_{i+1}.jpg"
-        capture.save_debug_frame(frame, game_state, filename)
+        # Save debug visualization
+        filename = f"debug/state_detection_{i+1}.jpg"
+        debug_frame = frame.copy()
+        capture.save_debug__frame(frame, game_state, filename)
 
         print(f"Detected game state for frame {i+1}:")
         print(f"  Player Health: {game_state['player_health']}")
@@ -103,7 +192,6 @@ def test_state_detection(num_frames=5, delay=1.0):
         print(f"  Number of Items: {len(game_state['items'])}")
         print(f"Saved debug visualization to {filename}")
 
-        # Delay before next capture
         if i < num_frames - 1:
             print(f"Waiting {delay} seconds before next capture...")
             time.sleep(delay)
@@ -120,8 +208,9 @@ def test_component_detection():
 
     print("Starting component detection test...")
     print("Please have The Binding of Isaac game window visible.")
-    print("Capturing in 3 seconds...")
-    time.sleep(3)
+    print("Switch to the game and unpause.")
+    print("Capturing in 5 seconds...")
+    time.sleep(5)
 
     # Capture frame
     frame = capture.capture_game_window()
@@ -214,8 +303,6 @@ def test_component_detection():
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="Test The Binding of Isaac game state detection")
     parser.add_argument(
         "--test",
@@ -226,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frames", type=int, default=5, help="Number of frames to capture for state detection test"
     )
-    parser.add_argument("--delay", type=float, default=1.0, help="Delay between frames in seconds")
+    parser.add_argument("--delay", type=float, default=2.0, help="Delay between frames in seconds")
 
     args = parser.parse_args()
 
