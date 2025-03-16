@@ -18,13 +18,13 @@ import sys
 import time
 
 import numpy as np
+from isaac_communication.isaac_game_state_reader import IsaacGameStateReader
 
 # Use proper relative imports
 # Get the parent directory (project root) in the path if needed
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import the game state reader from the communication package
-from isaac_communication.isaac_game_state_reader import IsaacGameStateReader
 
 
 class SimpleIsaacAgent:
@@ -251,10 +251,10 @@ class SimpleIsaacAgent:
     def update_q_value(self, state, action, reward, next_state):
         """Update the Q-value for the given state-action pair"""
         if state not in self.Q:
-            self.Q[state] = {a: 0 for a in self.actions.keys()}
+            self.Q[state] = {action: 0 for action in self.actions}
 
         if next_state not in self.Q:
-            self.Q[next_state] = {a: 0 for a in self.actions.keys()}
+            self.Q[next_state] = {action: 0 for action in self.actions}
 
         # Q-learning update rule
         best_next_value = max(self.Q[next_state].values())
