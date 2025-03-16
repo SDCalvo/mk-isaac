@@ -39,6 +39,44 @@ pipenv install -e .
 pipenv shell
 ```
 
+## Development Workflow
+
+### Git Version Control
+
+The project uses Git for version control. Here's a typical workflow:
+
+1. Create a new branch for a feature or bugfix:
+
+   ```bash
+   git checkout -b feature/new-feature-name
+   ```
+
+2. Make changes and commit them:
+
+   ```bash
+   git add .
+   git commit -m "Descriptive commit message"
+   ```
+
+3. Push your branch to remote (if using GitHub/GitLab):
+
+   ```bash
+   git push origin feature/new-feature-name
+   ```
+
+4. When feature is complete, merge back to main:
+   ```bash
+   git checkout main
+   git merge feature/new-feature-name
+   ```
+
+### Coding Workflow
+
+1. Implement or modify features in the appropriate module
+2. Run tests locally to verify changes
+3. Create checkpoints to save model progress during training
+4. Use the visualization tools to debug model behavior
+
 ## Usage
 
 ### Training the AI
